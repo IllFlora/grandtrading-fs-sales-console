@@ -4,6 +4,7 @@ window.GT_CONFIG={
   masterSheet:'01_リードマスター',
   activitySheet:'02_活動履歴',
   activitySheetId:1747292792,
+  settingsSheet:'03_設定',
   masterEmail:'neosanepix@gmail.com',
   refreshSeconds:60
 };
