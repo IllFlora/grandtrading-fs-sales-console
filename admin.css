@@ -1,0 +1,4 @@
+.primary:disabled,.danger:disabled{opacity:.55;cursor:wait}
+.admin-box{margin-top:24px;padding:16px;border:1px solid #f1c8c5;border-radius:10px;background:var(--redbg)}
+.admin-box p{margin:5px 0 12px;color:#7c5653;font-size:12px}
+.danger{width:100%;border:1px solid #d86b65;border-radius:9px;padding:11px;background:#fff;color:var(--red);font-weight:700;cursor:pointer}

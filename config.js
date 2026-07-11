@@ -3,5 +3,7 @@ window.GT_CONFIG={
   spreadsheetId:'1F84uPktW-sY8Sf3riBHxUw_NZAymTGHOMEI_7DgfVnE',
   masterSheet:'01_リードマスター',
   activitySheet:'02_活動履歴',
+  activitySheetId:1747292792,
+  masterEmail:'neosanepix@gmail.com',
   refreshSeconds:60
 };
