@@ -1,8 +1,7 @@
 window.GT_CONFIG={
-  googleClientId:'REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com',
+  googleClientId:'86582018736-j1l6gcl2jqf3kbk8fb8hnlaa1jbk959o.apps.googleusercontent.com',
   spreadsheetId:'1F84uPktW-sY8Sf3riBHxUw_NZAymTGHOMEI_7DgfVnE',
   masterSheet:'01_リードマスター',
   activitySheet:'02_活動履歴',
   refreshSeconds:60
 };
-
