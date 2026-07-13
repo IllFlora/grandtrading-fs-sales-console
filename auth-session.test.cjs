@@ -35,4 +35,21 @@ if(local2.getItem('gt_remember_login')!=='1')throw new Error('silent OAuth failu
 if(Number(local2.getItem('gt_silent_retry_after'))<=Date.now())throw new Error('silent OAuth failure did not set a finite retry cooldown');
 if(replaced2)throw new Error('silent OAuth failure created a redirect loop');
 
-console.log(JSON.stringify({passed:true,cases:['expired remembered session -> silent OAuth','silent failure -> preserve login intent without redirect loop'],loginHint:params.get('login_hint')}));
+const local3=storage({gt_last_email:'fs@example.com'});
+const session3=storage();
+let replaced3='';
+const location3={origin:'https://example.test',pathname:'/app/',hash:'',search:'',hostname:'example.test',replace:url=>{replaced3=url}};
+const context3={...context,window:null,location:location3,localStorage:local3,sessionStorage:session3,document:{...document,getElementById:()=>element()}};
+context3.window=context3;
+context3.window.GT_CONFIG=context.window.GT_CONFIG;
+vm.runInNewContext(fs.readFileSync('app.js','utf8'),context3,{filename:'app.js'});
+context3.beginOAuth(false,'calendar-consent',true);
+const calendarParams=new URL(replaced3).searchParams;
+if(calendarParams.get('prompt')!=='consent')throw new Error('calendar permission recovery did not force consent');
+if(!calendarParams.get('scope').includes('https://www.googleapis.com/auth/calendar.events'))throw new Error('calendar.events scope is missing');
+
+const source=fs.readFileSync('app.js','utf8');
+if(source.indexOf('if(!await checkCalendarAccess())')>source.indexOf('await persistPlan(r,plan,btn)'))throw new Error('calendar access is not checked before Sheets persistence');
+if(!source.includes('gt_pending_calendar_plan'))throw new Error('pending calendar plan recovery is missing');
+
+console.log(JSON.stringify({passed:true,cases:['expired remembered session -> silent OAuth','silent failure -> preserve login intent without redirect loop','missing Calendar scope -> explicit consent','Calendar permission check -> before Sheets persistence'],loginHint:params.get('login_hint')}));
