@@ -150,7 +150,7 @@ const ok = (name, cond, detail = '') => {
   ok('切替ボタンが描画される', /id="formSwitch"/.test(src));
   ok('切替ボタンにハンドラが付く', /\$\('formSwitch'\)\.onclick=\(\)=>\{S\.formMode=planning\?'result':'plan';open\(r\)\}/.test(src));
   ok('別の企業を開くと切替状態がリセットされる', /if\(l\)\{S\.formMode='';open\(/.test(src));
-  ok('保存後に切替状態がリセットされる（結果）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';await load\(\);toast\(`\$\{st\}として結果/.test(src));
+  ok('保存後に切替状態がリセットされる（結果）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';await removeLeadEvents\(r\.リードID\);await load\(\);toast\(`\$\{st\}として結果/.test(src));
   ok('保存後に切替状態がリセットされる（予定）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';await load\(\);toast\(plan\.calendar/.test(src));
 }
 
@@ -235,9 +235,73 @@ const ok = (name, cond, detail = '') => {
   ok('リードが見つからない場合を握る', /この企業はリードマスターに見つかりません/.test(src));
 }
 
-// ---- 出力 ------------------------------------------------------------------
-const passed = results.filter(r => r.pass).length;
-for (const r of results) {
-  console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  [${r.detail}]` : ''}`);
+// ---- 10. Googleカレンダーの後始末 ------------------------------------------
+{
+  ok('gtLeadId で予定を検索する', /privateExtendedProperty`?,\s*`gtLeadId=\$\{leadId\}`/.test(src)
+    || /privateExtendedProperty['`]\s*,\s*`gtLeadId=/.test(src), 'findLeadEvents');
+  ok('キャンセル済みの予定を除外する', /filter\(e=>e\.status!=='cancelled'\)/.test(src));
+  ok('予定をDELETEする', /calendarFetch\(`events\/\$\{encodeURIComponent\(e\.id\)\}`,\{method:'DELETE'\}\)/.test(src));
+  ok('404/410 も成功として数える（既に消えている場合）', /res\.ok\|\|res\.status===404\|\|res\.status===410/.test(src));
+
+  // 予定を作る前に必ず古いものを消す
+  ok('createCalendarEvent は作る前に古い予定を消す',
+    /async function createCalendarEvent\([^)]*\)\{[^}]*?\}await removeLeadEvents\(r\.リードID\);const start=/.test(src));
+  // 結果登録・初期化・最後の活動削除でも消す
+  ok('結果を登録したら予定を消す',
+    /S\.formMode='';await removeLeadEvents\(r\.リードID\);await load\(\)/.test(src));
+  ok('adminReset で予定を消す',
+    /const removed=await removeLeadEvents\(r\.リードID\);await load\(\)/.test(src));
+  ok('最後の活動を削除したときだけ予定を消す',
+    /if\(!latest\)await removeLeadEvents\(a\.leadId\)/.test(src));
+
+  // 失敗しても本処理を止めないこと（トークン切れ・API不調・権限なし）
+  const m = src.match(/async function removeLeadEvents\(leadId\)\{([\s\S]*?)\n/);
+  ok('removeLeadEvents を検出', !!m);
+  ok('removeLeadEvents は try/catch で握りつぶす（保存を止めない）',
+    /try\{[\s\S]*\}catch\{return 0\}/.test(m[1]), m[1].slice(0, 60));
+  ok('トークンが無い/期限切れなら何もしない', /if\(!leadId\|\|!tokenFresh\(30000\)\)return 0/.test(m[1]));
+  ok('findLeadEvents は失敗時に空配列を返す', /if\(!res\.ok\)return\[\]/.test(src));
+
+  // 実際に動かして、削除→作成の順序と件数を確認する
+  const fm = src.match(/async function findLeadEvents\(leadId\)\{[\s\S]*?\n/);
+  const rm = src.match(/async function removeLeadEvents\(leadId\)\{[\s\S]*?\n/);
+  const cf = src.match(/async function calendarFetch\(path,opt=\{\}\)\{[\s\S]*?\n/);
+  const calls = [];
+  const g = {
+    S: { token: 't' },
+    tokenFresh: () => true,
+    fetch: async (u, opt = {}) => {
+      const url = String(u);
+      calls.push({ url, method: opt.method || 'GET' });
+      if ((opt.method || 'GET') === 'GET') {
+        return { ok: true, json: async () => ({ items: [
+          { id: 'ev1', status: 'confirmed' },
+          { id: 'ev2', status: 'cancelled' },
+          { id: 'ev3', status: 'confirmed' },
+        ] }) };
+      }
+      return { ok: true, status: 204 };
+    },
+  };
+  const run = new Function('S', 'tokenFresh', 'fetch', 'URL', 'encodeURIComponent',
+    `${cf[0]}${fm[0]}${rm[0]} return removeLeadEvents;`);
+  const removeLeadEvents = run(g.S, g.tokenFresh, g.fetch, URL, encodeURIComponent);
+  return removeLeadEvents('GT-0184').then(n => {
+    ok('キャンセル済みを除いた2件だけ削除される', n === 2, `削除=${n}`);
+    const dels = calls.filter(c => c.method === 'DELETE');
+    ok('DELETE は ev1 と ev3 に対して発行される',
+      dels.length === 2 && dels.every(d => /ev1|ev3/.test(d.url)), JSON.stringify(dels.map(d => d.url.split('/').pop())));
+    ok('検索URLに gtLeadId が入る', /gtLeadId%3DGT-0184|gtLeadId=GT-0184/.test(calls[0].url), calls[0].url);
+    finish();
+  });
 }
-console.log(`\n${passed}/${results.length} passed`);
+
+// ---- 出力 ------------------------------------------------------------------
+function finish() {
+  const passed = results.filter(r => r.pass).length;
+  for (const r of results) {
+    console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  [${r.detail}]` : ''}`);
+  }
+  console.log(`
+${passed}/${results.length} passed`);
+}
