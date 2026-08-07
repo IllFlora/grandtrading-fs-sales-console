@@ -8,6 +8,7 @@ const path = require('path');
 const src = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 
 const results = [];
+const pending = [];   // 非同期テストはここに積み、最後にまとめて待つ
 const ok = (name, cond, detail = '') => {
   results.push({ name, pass: !!cond, detail });
   if (!cond) process.exitCode = 1;
@@ -150,7 +151,7 @@ const ok = (name, cond, detail = '') => {
   ok('切替ボタンが描画される', /id="formSwitch"/.test(src));
   ok('切替ボタンにハンドラが付く', /\$\('formSwitch'\)\.onclick=\(\)=>\{S\.formMode=planning\?'result':'plan';open\(r\)\}/.test(src));
   ok('別の企業を開くと切替状態がリセットされる', /if\(l\)\{S\.formMode='';open\(/.test(src));
-  ok('保存後に切替状態がリセットされる（結果）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';await removeLeadEvents\(r\.リードID\);await load\(\);toast\(`\$\{st\}として結果/.test(src));
+  ok('保存後に切替状態がリセットされる（結果）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';const gone=await removeLeadEvents/.test(src));
   ok('保存後に切替状態がリセットされる（予定）', /\$\('drawer'\)\.classList\.add\('hidden'\);S\.formMode='';await load\(\);toast\(plan\.calendar/.test(src));
 }
 
@@ -248,14 +249,14 @@ const ok = (name, cond, detail = '') => {
     /async function createCalendarEvent\([^)]*\)\{[^}]*?\}await removeLeadEvents\(r\.リードID\);const start=/.test(src));
   // 結果登録・初期化・最後の活動削除でも消す
   ok('結果を登録したら予定を消す',
-    /S\.formMode='';await removeLeadEvents\(r\.リードID\);await load\(\)/.test(src));
+    /S\.formMode='';const gone=await removeLeadEvents\(r\.リードID,endOfTodayISO\(\)\);await load\(\)/.test(src));
   ok('adminReset で予定を消す',
     /const removed=await removeLeadEvents\(r\.リードID\);await load\(\)/.test(src));
   ok('最後の活動を削除したときだけ予定を消す',
     /if\(!latest\)await removeLeadEvents\(a\.leadId\)/.test(src));
 
   // 失敗しても本処理を止めないこと（トークン切れ・API不調・権限なし）
-  const m = src.match(/async function removeLeadEvents\(leadId\)\{([\s\S]*?)\n/);
+  const m = src.match(/async function removeLeadEvents\(leadId,before=''\)\{([\s\S]*?)\n/);
   ok('removeLeadEvents を検出', !!m);
   ok('removeLeadEvents は try/catch で握りつぶす（保存を止めない）',
     /try\{[\s\S]*\}catch\{return 0\}/.test(m[1]), m[1].slice(0, 60));
@@ -263,8 +264,8 @@ const ok = (name, cond, detail = '') => {
   ok('findLeadEvents は失敗時に空配列を返す', /if\(!res\.ok\)return\[\]/.test(src));
 
   // 実際に動かして、削除→作成の順序と件数を確認する
-  const fm = src.match(/async function findLeadEvents\(leadId\)\{[\s\S]*?\n/);
-  const rm = src.match(/async function removeLeadEvents\(leadId\)\{[\s\S]*?\n/);
+  const fm = src.match(/async function findLeadEvents\(leadId,before=''\)\{[\s\S]*?\n/);
+  const rm = src.match(/async function removeLeadEvents\(leadId,before=''\)\{[\s\S]*?\n/);
   const cf = src.match(/async function calendarFetch\(path,opt=\{\}\)\{[\s\S]*?\n/);
   const calls = [];
   const g = {
@@ -286,14 +287,106 @@ const ok = (name, cond, detail = '') => {
   const run = new Function('S', 'tokenFresh', 'fetch', 'URL', 'encodeURIComponent',
     `${cf[0]}${fm[0]}${rm[0]} return removeLeadEvents;`);
   const removeLeadEvents = run(g.S, g.tokenFresh, g.fetch, URL, encodeURIComponent);
-  return removeLeadEvents('GT-0184').then(n => {
+  pending.push(removeLeadEvents('GT-0184').then(n => {
     ok('キャンセル済みを除いた2件だけ削除される', n === 2, `削除=${n}`);
     const dels = calls.filter(c => c.method === 'DELETE');
     ok('DELETE は ev1 と ev3 に対して発行される',
       dels.length === 2 && dels.every(d => /ev1|ev3/.test(d.url)), JSON.stringify(dels.map(d => d.url.split('/').pop())));
     ok('検索URLに gtLeadId が入る', /gtLeadId%3DGT-0184|gtLeadId=GT-0184/.test(calls[0].url), calls[0].url);
-    finish();
-  });
+  }));
+}
+
+// ---- 11. correctStatus の全56通り（正本のフェーズを決める関数） -------------
+{
+  const m = src.match(/function correctStatus\(visit,deal,selected\)\{[\s\S]*?return selected\}/);
+  ok('correctStatus を検出', !!m);
+  const cs = new Function(`${m[0]} return correctStatus;`)();
+
+  const visits = ['不在', '受付NG', '担当不在', '担当接触', '資料渡し', '再訪依頼', '商談化'];
+  const deals = ['未設定', '情報収集', '見込み低', '見込み中', '見込み高', '見積依頼', '成約', '失注'];
+  ok('選択肢の数が実装と一致（7×8=56通り）',
+    visits.every(v => src.includes(`'${v}'`)) && deals.every(d => src.includes(`'${d}'`)));
+
+  // 結果から確定できるものは、現在フェーズに関係なく確定値を返す
+  ok('成約 は必ず成約', deals.includes('成約') && visits.every(v => cs(v, '成約', '商談中') === '成約'));
+  ok('失注 は必ず見送り', visits.every(v => cs(v, '失注', '商談中') === '見送り'));
+  ok('商談化 は商談中', deals.filter(d => !['成約', '失注'].includes(d)).every(d => cs('商談化', d, '未着手') === '商談中'));
+  ok('見込み/見積依頼 は商談中',
+    ['見込み低', '見込み中', '見込み高', '見積依頼'].every(d => cs('不在', d, '未着手') === '商談中'));
+  ok('再訪依頼 は再訪予定', ['未設定', '情報収集'].every(d => cs('再訪依頼', d, '未着手') === '再訪予定'));
+
+  // ここが今回の修正点：判断できない組み合わせは現在フェーズを尊重する
+  const neutralV = ['不在', '受付NG', '担当不在', '担当接触', '資料渡し'];
+  const neutralD = ['未設定', '情報収集'];
+  ok('未着手に中立な結果 → 訪問済みへ進む',
+    neutralV.every(v => neutralD.every(d => cs(v, d, '未着手') === '訪問済み')));
+  ok('訪問予定に中立な結果 → 訪問済みへ進む',
+    neutralV.every(v => neutralD.every(d => cs(v, d, '訪問予定') === '訪問済み')));
+  ok('★商談中に「電話・不在」を記録しても商談中のまま（降格しない）',
+    neutralV.every(v => neutralD.every(d => cs(v, d, '商談中') === '商談中')),
+    `cs('不在','未設定','商談中')=${cs('不在', '未設定', '商談中')}`);
+  ok('★成約済みに中立な結果を記録しても成約のまま',
+    neutralV.every(v => neutralD.every(d => cs(v, d, '成約') === '成約')));
+  ok('★再訪予定は維持される', neutralV.every(v => neutralD.every(d => cs(v, d, '再訪予定') === '再訪予定')));
+  ok('★見送りは維持される', neutralV.every(v => neutralD.every(d => cs(v, d, '見送り') === '見送り')));
+  ok('空の現在フェーズ → 訪問済み', cs('不在', '未設定', '') === '訪問済み');
+
+  // 56通りすべてが statuses のいずれかを返す（未定義値を書き込まない）
+  const statuses = ['未着手', '訪問予定', '訪問済み', '再訪予定', '商談中', '成約', '見送り'];
+  const bad = [];
+  for (const v of visits) for (const d of deals) for (const s of statuses) {
+    const out = cs(v, d, s);
+    if (!statuses.includes(out)) bad.push(`${v}/${d}/${s}→${out}`);
+  }
+  ok('全392通りが正規のステータスを返す', bad.length === 0, bad.slice(0, 3).join(', '));
+
+  // リスト外は現在フェーズが無いので、必ず結果から決まる
+  ok('リスト外活動は 訪問済み から始まる', /correctStatus\(vr,dr,'訪問済み'\)/.test(src));
+}
+
+// ---- 12. 訪問順が日付書式でも壊れないこと ---------------------------------
+{
+  ok('isNum ヘルパーがある', /const isNum=v=>\/\^\\d\+\$\/\.test/.test(src));
+  const m = src.match(/const isNum=(v=>[^,]*),leadOrder=(r=>[^,]*),leadDate=(r=>.*?);/);
+  ok('leadOrder / leadDate を検出', !!m);
+  const f = new Function(`const isNum=${m[1]},leadOrder=${m[2]},leadDate=${m[3]};return {isNum,leadOrder,leadDate}`)();
+
+  ok('正常な訪問順はそのまま', f.leadOrder({ 訪問順: '3' }) === '3');
+  ok('日付化した訪問順は空になる（"1899-12-31番"と出さない）',
+    f.leadOrder({ 訪問順: '1899-12-31' }) === '', f.leadOrder({ 訪問順: '1899-12-31' }));
+  ok('空の訪問順は空', f.leadOrder({ 訪問順: '' }) === '');
+  ok('正常な訪問予定日はそのまま', f.leadDate({ 訪問予定日: '2026-08-12' }) === '2026-08-12');
+  ok('壊れた訪問予定日は空になる', f.leadDate({ 訪問予定日: '2026/8/12' }) === '');
+
+  // 今日の訪問の並び替えが日付文字列で崩れないこと
+  const sm = src.match(/x\.sort\(\(a,b\)=>S\.view==='today'\?\((\(isNum\(a\.訪問順\)[\s\S]*?999\))\)/);
+  ok('todayの並び替えを検出', !!sm);
+  ok('並び替えが isNum で守られている', /isNum\(a\.訪問順\)\?\+a\.訪問順:999/.test(src));
+  const cmp = new Function('isNum', 'a', 'b', `return (${sm[1]})`);
+  const rows = [{ 訪問順: '3' }, { 訪問順: '1899-12-31' }, { 訪問順: '1' }, { 訪問順: '2' }];
+  const sorted = [...rows].sort((a, b) => cmp(f.isNum, a, b));
+  ok('数値の訪問順は昇順、壊れた値は末尾',
+    sorted.map(r => r.訪問順).join(',') === '1,2,3,1899-12-31', sorted.map(r => r.訪問順).join(','));
+}
+
+// ---- 13. カレンダー削除が先のアポを巻き込まないこと ------------------------
+{
+  ok('findLeadEvents が timeMax を受け取る', /async function findLeadEvents\(leadId,before=''\)/.test(src));
+  ok('before があれば timeMax を付ける', /if\(before\)u\.searchParams\.set\('timeMax',before\)/.test(src));
+  ok('removeLeadEvents が before を渡す', /async function removeLeadEvents\(leadId,before=''\)[\s\S]{0,120}findLeadEvents\(leadId,before\)/.test(src));
+  ok('★結果登録では今日までの予定しか消さない（先のアポを守る）',
+    /await removeLeadEvents\(r\.リードID,endOfTodayISO\(\)\)/.test(src));
+  ok('予定の入れ直しでは全件消す（二重防止）',
+    /async function createCalendarEvent\([^)]*\)\{[^}]*?\}await removeLeadEvents\(r\.リードID\);/.test(src));
+  ok('endOfTodayISO は JST の23:59:59', /new Date\(`\$\{today\(\)\}T23:59:59\+09:00`\)\.toISOString\(\)/.test(src));
+  ok('消した件数をFSに伝える', /カレンダーの予定\$\{gone\}件を消化済み/.test(src));
+}
+
+// ---- 14. 業種フィルタが自動更新で戻らないこと -----------------------------
+{
+  ok('業種プルダウンが選択状態を保つ',
+    /categoryFilter'\)\.innerHTML=[\s\S]{0,200}\$\{x===S\.category\?'selected':''\}/.test(src));
+  ok('都道府県プルダウンも保つ（既存）', /\$\{p===S\.area\?'selected':''\}/.test(src));
 }
 
 // ---- 出力 ------------------------------------------------------------------
@@ -305,3 +398,5 @@ function finish() {
   console.log(`
 ${passed}/${results.length} passed`);
 }
+
+Promise.all(pending).then(finish);
