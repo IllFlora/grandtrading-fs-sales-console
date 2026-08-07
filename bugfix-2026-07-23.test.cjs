@@ -16,41 +16,54 @@ const ok = (name, cond, detail = '') => {
 // ---- 1. リスト外フォームが60秒ごとに作り直されないこと -------------------
 {
   // render() の special 分岐を切り出して、2回連続で呼んでも再生成されないことを確認
-  const m = src.match(/if\(special\)\{if\(S\.specialRendered!==S\.view\)\{[\s\S]*?\}else if\(S\.view==='admin'\)loadDeleteRequests\(\);return\}/);
+  const m = src.match(/if\(special\)\{if\(S\.specialRendered!==S\.view\)\{[\s\S]*?loadActivityFeed\(\);return\}/);
   ok('render: specialViewの再生成ガードが存在する', !!m);
 
-  let rebuildCount = 0, deleteReloadCount = 0;
+  let rebuildCount = 0, deleteReloadCount = 0, feedReloadCount = 0;
   const S = { view: 'outside', specialRendered: '' };
   const el = { innerHTML: '' };
   const $ = () => el;
   const outsideView = () => { rebuildCount++; return '<form>'; };
   const scoreGuide = () => '<div>';
   const adminView = () => { rebuildCount++; return '<div>'; };
+  const historyView = () => { rebuildCount++; return '<div>'; };
   const bindOutside = () => {};
   const bindAdmin = () => {};
+  const bindHistory = () => {};
   const loadDeleteRequests = () => { deleteReloadCount++; };
-  const step = new Function('S', '$', 'outsideView', 'scoreGuide', 'adminView',
-    'bindOutside', 'bindAdmin', 'loadDeleteRequests',
+  const loadActivityFeed = () => { feedReloadCount++; };
+  const args = [S, $, outsideView, scoreGuide, adminView, historyView,
+    bindOutside, bindAdmin, bindHistory, loadDeleteRequests, loadActivityFeed];
+  const step = new Function('S', '$', 'outsideView', 'scoreGuide', 'adminView', 'historyView',
+    'bindOutside', 'bindAdmin', 'bindHistory', 'loadDeleteRequests', 'loadActivityFeed',
     `const special=true;${m[0]}`);
 
-  step(S, $, outsideView, scoreGuide, adminView, bindOutside, bindAdmin, loadDeleteRequests);
+  step(...args);
   const afterFirst = rebuildCount;
   // 60秒タイマーによる load() → render() を4回ぶん模擬
-  for (let i = 0; i < 4; i++) step(S, $, outsideView, scoreGuide, adminView, bindOutside, bindAdmin, loadDeleteRequests);
+  for (let i = 0; i < 4; i++) step(...args);
   ok('リスト外: 初回のみ生成される', afterFirst === 1, `初回=${afterFirst}`);
   ok('リスト外: 以降の自動更新で入力欄が作り直されない（=入力が消えない）',
     rebuildCount === 1, `合計生成回数=${rebuildCount}（1であるべき）`);
 
   // 画面を切り替えたら作り直される
   S.view = 'scoreGuide';
-  step(S, $, outsideView, scoreGuide, adminView, bindOutside, bindAdmin, loadDeleteRequests);
+  step(...args);
   ok('画面を切り替えたら再生成される', S.specialRendered === 'scoreGuide');
 
   // 管理者画面では削除依頼だけ再取得される
   S.view = 'admin'; S.specialRendered = 'admin';
   const before = deleteReloadCount;
-  step(S, $, outsideView, scoreGuide, adminView, bindOutside, bindAdmin, loadDeleteRequests);
+  step(...args);
   ok('管理者: フォームは保持しつつ削除依頼だけ再取得', deleteReloadCount === before + 1);
+
+  // 活動履歴画面では一覧だけ再取得される
+  S.view = 'history'; S.specialRendered = '';
+  step(...args);
+  ok('活動履歴: 初回はビューを生成する', S.specialRendered === 'history');
+  const feedBefore = feedReloadCount;
+  step(...args); step(...args);
+  ok('活動履歴: 自動更新では一覧だけ再取得される', feedReloadCount === feedBefore + 2, `再取得=${feedReloadCount - feedBefore}`);
 }
 
 // ---- 2. load() の行番号がシート実行と一致すること -------------------------
@@ -164,6 +177,62 @@ const ok = (name, cond, detail = '') => {
     /if\(S\.pendingLead\)\{const lead=S\.rows\.find\(x=>x\.リードID===S\.pendingLead\);S\.pendingLead='';if\(lead\)\{S\.formMode='';open\(lead\)\}\}/.test(src));
   ok('S に pendingLead / formMode / specialRendered が初期化されている',
     /specialRendered:'',formMode:'',pendingLead:''/.test(src));
+}
+
+// ---- 9. 活動履歴ビュー ----------------------------------------------------
+{
+  ok('viewMeta に history が登録されている', /history:\['ACTIVITY LOG','活動履歴'/.test(src));
+  ok('render の special に history が含まれる',
+    /const special=\['outside','scoreGuide','admin','history'\]\.includes\(S\.view\)/.test(src));
+  ok('サイドバーに活動履歴ナビがある',
+    /data-view="history">活動履歴</.test(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')));
+  ok('モバイルナビにも履歴がある',
+    /data-view="history"><span>≡<\/span>履歴/.test(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')));
+  const css = fs.readFileSync(path.join(__dirname, 'quick-report.css'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, 'admin.css'), 'utf8');
+  ok('モバイルナビが6列になっている',
+    !/grid-template-columns:repeat\(5,1fr\)/.test(css) && /repeat\(6,1fr\)/.test(css));
+  ok('feed のスタイルが定義されている', /\.feed-item\{/.test(css) && /\.hist-tab\{/.test(css));
+
+  // 絞り込みロジックを実際に評価する
+  const m = src.match(/function renderActivityFeed\(\)\{[\s\S]*?const q=([^;]*);let items=\(S\.activities\|\|\[\]\)\.filter\((.*?)\);/);
+  ok('renderActivityFeed の絞り込みを検出', !!m);
+  const filter = new Function('S', 'x', `const q=${m[1]};return (${m[2]})(x)`);
+  const acts = [
+    { company: '甲信リユース', memo: '在庫多い', result: '担当接触 / 情報収集', type: '訪問', email: 'me@x.com' },
+    { company: '北アルプス金属', memo: '不在', result: '不在 / 未設定', type: '訪問', email: 'other@x.com' },
+  ];
+  const S2 = (all, q) => ({ activities: acts, histAll: all, histQ: q, user: { email: 'me@x.com' } });
+  ok('自分の記録のみ: 自分の分は残る', filter(S2(false, ''), acts[0]) === true);
+  ok('自分の記録のみ: 他人の分は除外', filter(S2(false, ''), acts[1]) === false);
+  ok('全員の記録: 他人の分も出る', filter(S2(true, ''), acts[1]) === true);
+  ok('企業名で絞り込める', filter(S2(true, '北アルプス'), acts[1]) === true
+    && filter(S2(true, '北アルプス'), acts[0]) === false);
+  ok('メモでも絞り込める', filter(S2(true, '在庫'), acts[0]) === true);
+
+  // 権限まわり
+  const fm = src.match(/function feedItem\(a\)\{const mine=([^,]*),canDelete=([^,]*),canRequest=(.*?);/);
+  ok('feedItem の権限判定を検出', !!fm);
+  const perm = new Function('S', 'isAdmin', 'a',
+    `const mine=${fm[1]},canDelete=${fm[2]},canRequest=${fm[3]};return {mine,canDelete,canRequest}`);
+  const me = { email: 'me@x.com' };
+  let p = perm({ user: me }, () => false, { email: 'me@x.com' });
+  ok('FS: 自分の記録に削除依頼が出る', p.canRequest === true && p.canDelete === false);
+  p = perm({ user: me }, () => false, { email: 'other@x.com' });
+  ok('FS: 他人の記録には削除依頼が出ない', p.canRequest === false && p.canDelete === false);
+  p = perm({ user: me }, () => true, { email: 'other@x.com' });
+  ok('管理者: 他人の記録も直接削除できる（従来は不可能だった）', p.canDelete === true);
+  p = perm({ user: me }, () => true, { email: 'me@x.com' });
+  ok('管理者: 自分の記録も直接削除できる', p.canDelete === true && p.canRequest === false);
+
+  ok('deleteActivity は管理者限定', /async function deleteActivity\(a\)\{if\(!a\|\|!isAdmin\(\)\)return;/.test(src));
+  ok('deleteActivity は確認を取る', /deleteActivity[\s\S]{0,220}confirm\(/.test(src));
+  ok('deleteActivity は残存履歴から最新フェーズを再計算する',
+    /deleteActivity[\s\S]*?remaining=all\.filter\(x=>x\.leadId===a\.leadId&&x\.id!==a\.id\)/.test(src));
+  ok('deleteActivity は履歴が無くなれば未着手へ戻す',
+    /deleteActivity[\s\S]*?\['未着手','未割当','','','','','','未登録'\]/.test(src));
+  ok('企業を開くボタンがある', /data-feed-lead=/.test(src));
+  ok('リードが見つからない場合を握る', /この企業はリードマスターに見つかりません/.test(src));
 }
 
 // ---- 出力 ------------------------------------------------------------------
