@@ -1,12 +1,12 @@
 window.GT_CONFIG={
   googleClientId:'86582018736-j1l6gcl2jqf3kbk8fb8hnlaa1jbk959o.apps.googleusercontent.com',
   spreadsheetId:'1F84uPktW-sY8Sf3riBHxUw_NZAymTGHOMEI_7DgfVnE',
-  masterSheet:'01_リードマスター',
-  activitySheet:'02_活動履歴',
+  masterSheet:'データ_企業',
+  activitySheet:'データ_活動',
   activitySheetId:1747292792,
-  deletionSheet:'05_削除依頼',
+  deletionSheet:'データ_削除依頼',
   deletionSheetId:1897054135,
-  settingsSheet:'03_設定',
+  settingsSheet:'データ_ユーザー',
   masterEmail:'neosanepix@gmail.com',
   refreshSeconds:60
 };
