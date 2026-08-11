@@ -427,6 +427,46 @@ const ok = (name, cond, detail = '') => {
   ok('未着手は出ない', !mine(own, td, { 営業ステータス: '未着手', 訪問予定日: '' }));
 }
 
+// ---- 16. 営業時間・定休日（FS要望「今から行けるか」） ------------------------
+{
+  const grab = (n) => {
+    const i = src.indexOf('function ' + n + '(');
+    if (i < 0) throw new Error('not found: ' + n);
+    let d = 0;
+    for (let j = src.indexOf('{', i); j < src.length; j++) {
+      if (src[j] === '{') d++;
+      else if (src[j] === '}') { d--; if (!d) return src.slice(i, j + 1); }
+    }
+  };
+  const hol = src.match(/const JP_HOLIDAYS=new Set\(\[[^\]]*\]\),HOLIDAY_UNTIL='[^']*';/)[0];
+  let FAKE = { wd: '火', min: 600, date: '2026-08-12' };
+  const code = hol + '\n' + [grab('isClosedToday'), grab('parseHours'), grab('openState')].join('\n')
+    .replace('const hh=parseHours(r.営業時間),now=jstNow()', 'const hh=parseHours(r.営業時間),now=FAKE');
+  const mk = new Function('FAKE', 'esc', code + ';return{openState}');
+  const at = (wd, min, date = '2026-08-12') => { FAKE = { wd, min, date }; return mk(FAKE, String).openState; };
+
+  ok('営業時間内は営業中', at('火', 600)({ 営業時間: '10:00-19:00', 定休日: '水' }).state === 'open');
+  ok('開店前は closed', at('火', 540)({ 営業時間: '10:00-19:00', 定休日: '水' }).state === 'closed');
+  ok('開店ちょうどは open', at('火', 600)({ 営業時間: '10:00-19:00', 定休日: '' }).state === 'open');
+  ok('閉店ちょうどは closed', at('火', 1140)({ 営業時間: '10:00-19:00', 定休日: '' }).state === 'closed');
+  ok('残60分以内は soon', at('火', 1100)({ 営業時間: '10:00-19:00', 定休日: '' }).cls === 'biz-soon');
+  ok('本日定休は closed', at('水', 600)({ 営業時間: '10:00-19:00', 定休日: '水' }).state === 'closed');
+  ok('複数定休を解釈する', at('木', 600)({ 営業時間: '10:00-19:00', 定休日: '水,木' }).state === 'closed');
+  ok('無休は営業扱い', at('日', 600)({ 営業時間: '10:00-19:00', 定休日: '無休' }).state === 'open');
+  ok('不定休は unknown', at('火', 600)({ 営業時間: '10:00-19:00', 定休日: '不定休' }).state === 'unknown');
+  ok('★時間未確認は open と言い切らない', at('火', 600)({ 営業時間: '未確認', 定休日: '' }).state === 'unknown');
+  ok('壊れた時間表記も unknown', at('火', 600)({ 営業時間: '10時〜19時', 定休日: '' }).state === 'unknown');
+  ok('日跨ぎ営業 23時は open', at('火', 1380)({ 営業時間: '18:00-02:00', 定休日: '' }).state === 'open');
+  ok('日跨ぎ営業 1時は open', at('火', 60)({ 営業時間: '18:00-02:00', 定休日: '' }).state === 'open');
+  ok('日跨ぎ営業 3時は closed', at('火', 180)({ 営業時間: '18:00-02:00', 定休日: '' }).state === 'closed');
+  ok('24時終業の23:59は open', at('火', 1439)({ 営業時間: '10:00-00:00', 定休日: '' }).state === 'open');
+  ok('★祝日は「祝」定休の店を closed にする', at('火', 600, '2026-08-11')({ 営業時間: '10:00-19:00', 定休日: '日,祝' }).state === 'closed');
+  ok('祝日でない日は営業', at('火', 600, '2026-08-12')({ 営業時間: '10:00-19:00', 定休日: '日,祝' }).state === 'open');
+  ok('祝を書いていない店は祝日でも営業', at('火', 600, '2026-11-03')({ 営業時間: '10:00-19:00', 定休日: '日' }).state === 'open');
+  ok('★祝日表の期間外＋祝は unknown（誤って営業中と言わない）', at('火', 600, '2028-05-03')({ 営業時間: '10:00-19:00', 定休日: '日,祝' }).state === 'unknown');
+  ok('祝日表の期間外でも祝なしなら判定する', at('火', 600, '2028-05-03')({ 営業時間: '10:00-19:00', 定休日: '日' }).state === 'open');
+}
+
 // ---- 出力 ------------------------------------------------------------------
 function finish() {
   const passed = results.filter(r => r.pass).length;
